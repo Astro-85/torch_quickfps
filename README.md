@@ -51,7 +51,6 @@ This package builds a CUDA extension when a CUDA toolchain is available (i.e., `
 - Force CUDA build: `WITH_CUDA=1 pip install .` or `WITH_CUDA=1 pip install . --no-build-isolation --no-cache-dir -v`
 - Force CPU-only build: `WITH_CUDA=0 pip install .`
 
-On GPU, the sampler uses **bucket-based pruning** (spatial voxel buckets + bounding-box lower bounds) to skip most distance updates; it is **not** the standard `O(Nk)` dense FPS update.
 
 ## Reference
 Bucket-based farthest point sampling (QuickFPS) is proposed in the following paper. The implementation is based on the author's Repo ([CPU](https://github.com/hanm2019/bucket-based_farthest-point-sampling_CPU) & [GPU](https://github.com/hanm2019/bucket-based_farthest-point-sampling_GPU)).
