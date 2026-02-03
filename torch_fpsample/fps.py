@@ -1,4 +1,19 @@
-from typing import Optional, Tuple
+"""Public Python API for torch_fpsample.
+
+The core operator is implemented as a C++/CUDA extension and loaded via
+``torch.ops.load_library`` in :mod:`torch_fpsample.__init__`.
+
+We expose two user-facing functions:
+
+* :func:`sample` – returns (points, indices) to match common FPS APIs.
+* :func:`sample_idx` – returns indices only (no gather), for maximum speed.
+
+Both accept an optional ``mask`` where ``True`` indicates eligible points.
+"""
+
+from __future__ import annotations
+
+from typing import Optional, Tuple, Union
 
 import torch
 
@@ -9,23 +24,43 @@ def sample(
     h: Optional[int] = None,
     start_idx: Optional[int] = None,
     mask: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.LongTensor]:
-    """Farthest Point Sampling (FPS) algorithm.
+    return_points: bool = True,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    """Bucket-based farthest point sampling.
 
     Args:
-        x (torch.Tensor): (*, N, D) input points tensor.
-        k (int): Number of points to sample.
-        h (int, optional): Maximum height for the bucket sampling. Defaults to 5.
-            See https://github.com/leonardodalinky/fpsample#usage for details.
-        start_idx (int, optional): Index of the point to start sampling from. Defaults to None.
-        mask (torch.Tensor, optional): Boolean mask of valid points to sample from,
-            with shape (*, N). True indicates a valid point. Defaults to None.
-        backend (str, optional): Backend to use for sampling. Defaults to "bucket".
-            Available options are: `bucket`, `naive`.
+        x: Tensor with shape [..., N, C] (any batch dims).
+        k: Number of samples (<= N).
+        h: Bucket height parameter (controls bucket granularity).
+        start_idx: Optional starting index to seed FPS.
+        mask: Optional boolean/uint8 mask of shape [..., N] where True means
+            the point is eligible to be sampled.
+        return_points: If True (default), return ``(points, indices)``.
+            If False, return indices only (equivalent to :func:`sample_idx`).
 
     Returns:
-        (torch.Tensor, torch.LongTensor): (Batched) sampled points tensor and (batched) indices of the sampled points.
+        If return_points=True: (sampled_points, sampled_indices)
+        If return_points=False: sampled_indices
     """
-    return torch.ops.torch_fpsample.sample(x, k, h, start_idx, mask)
+
+    if return_points:
+        return torch.ops.torch_fpsample.sample(x, k, h, start_idx, mask)
+    return torch.ops.torch_fpsample.sample_idx(x, k, h, start_idx, mask)
 
 
+def sample_idx(
+    x: torch.Tensor,
+    k: int,
+    h: Optional[int] = None,
+    start_idx: Optional[int] = None,
+    mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Bucket-based farthest point sampling (indices only).
+
+    This avoids the internal gather and is typically faster when you only need
+    indices (e.g., to gather features yourself).
+
+    Returns:
+        sampled_indices with shape [..., k]
+    """
+    return torch.ops.torch_fpsample.sample_idx(x, k, h, start_idx, mask)

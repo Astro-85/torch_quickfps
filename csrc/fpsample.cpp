@@ -11,6 +11,7 @@
 
 TORCH_LIBRARY(torch_fpsample, m) {
     m.def("sample(Tensor self, int k, int? h=None, int? start_idx=None, Tensor? mask=None) -> (Tensor, Tensor)");
+    m.def("sample_idx(Tensor self, int k, int? h=None, int? start_idx=None, Tensor? mask=None) -> Tensor");
 }
 
 PYBIND11_MODULE(_core, m) {
@@ -20,5 +21,3 @@ PYBIND11_MODULE(_core, m) {
     m.attr("PYBIND11_VERSION") = STR(PYBIND11_VERSION_MAJOR) "." STR(
         PYBIND11_VERSION_MINOR) "." STR(PYBIND11_VERSION_PATCH);
 }
-
-

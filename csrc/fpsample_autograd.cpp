@@ -59,8 +59,27 @@ std::tuple<Tensor, Tensor> sample_autograd(const Tensor &x, int64_t k,
     return std::make_tuple(results[0], results[1]);
 }
 
+
+
+using FuncIdxType = Tensor(const Tensor &, int64_t,
+                           torch::optional<int64_t>,
+                           torch::optional<int64_t>,
+                           torch::optional<Tensor>);
+
+Tensor sample_idx_autograd(const Tensor &x, int64_t k,
+                           torch::optional<int64_t> h,
+                           torch::optional<int64_t> start_idx,
+                           torch::optional<Tensor> mask) {
+    // Indices are non-differentiable; we simply route to the underlying kernel below AD.
+    torch::AutoDispatchBelowADInplaceOrView guard;
+    static auto op = torch::Dispatcher::singleton()
+                         .findSchemaOrThrow("torch_fpsample::sample_idx", "")
+                         .typed<FuncIdxType>();
+    return op.call(x, k, h, start_idx, mask);
+}
 TORCH_LIBRARY_IMPL(torch_fpsample, Autograd, m) {
     m.impl("sample", &sample_autograd);
+    m.impl("sample_idx", &sample_idx_autograd);
 }
 
 

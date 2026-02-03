@@ -30,6 +30,11 @@ sampled_points, indices = torch_fpsample.sample(x, 1024, h=5)
 # random sample with start point index (int)
 sampled_points, indices = torch_fpsample.sample(x, 1024, start_idx=0)
 
+# indices-only (avoids gather; fastest path)
+indices = torch_fpsample.sample(x, 1024, return_points=False)
+# or equivalently:
+indices = torch_fpsample.sample_idx(x, 1024)
+
 # masked sample: only sample from valid points (mask shape [B, N])
 mask = torch.ones(x.shape[:-1], dtype=torch.bool)
 mask[:, 1000:] = False  # e.g. padding
