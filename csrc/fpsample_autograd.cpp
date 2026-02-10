@@ -5,7 +5,8 @@ using torch::Tensor;
 using FuncType = std::tuple<Tensor, Tensor>(const Tensor &, int64_t,
                                             torch::optional<int64_t>,
                                             torch::optional<int64_t>,
-                                            torch::optional<Tensor>);
+                                            torch::optional<Tensor>,
+                                            torch::optional<int64_t>);
 
 ////////////////////
 //                //
@@ -20,12 +21,13 @@ class FPSampleFunction : public torch::autograd::Function<FPSampleFunction> {
     static variable_list forward(AutogradContext *ctx, const Tensor &x,
                                  int64_t k, torch::optional<int64_t> h,
                                  torch::optional<int64_t> start_idx,
-                                 torch::optional<Tensor> mask) {
+                                 torch::optional<Tensor> mask,
+                                 torch::optional<int64_t> low_d) {
         torch::AutoDispatchBelowADInplaceOrView guard;
         static auto op = torch::Dispatcher::singleton()
                              .findSchemaOrThrow("torch_fpsample::sample", "")
                              .typed<FuncType>();
-        auto results = op.call(x, k, h, start_idx, mask);
+        auto results = op.call(x, k, h, start_idx, mask, low_d);
         auto ret_tensor = std::get<0>(results);
         auto ret_indices = std::get<1>(results);
         ctx->save_for_backward({ret_indices});
@@ -47,15 +49,16 @@ class FPSampleFunction : public torch::autograd::Function<FPSampleFunction> {
             torch::zeros(x_sizes, grad_output.options()), -2,
             ret_indices.unsqueeze(-1).repeat(tmp_repeat_sizes), grad_output);
 
-        return {grad_input, Variable(), Variable(), Variable(), Variable()};
+        return {grad_input, Variable(), Variable(), Variable(), Variable(), Variable()};
     }
 };
 
 std::tuple<Tensor, Tensor> sample_autograd(const Tensor &x, int64_t k,
                                            torch::optional<int64_t> h,
                                            torch::optional<int64_t> start_idx,
-                                           torch::optional<Tensor> mask) {
-    auto results = FPSampleFunction::apply(x, k, h, start_idx, mask);
+                                           torch::optional<Tensor> mask,
+                                           torch::optional<int64_t> low_d) {
+    auto results = FPSampleFunction::apply(x, k, h, start_idx, mask, low_d);
     return std::make_tuple(results[0], results[1]);
 }
 
@@ -64,18 +67,20 @@ std::tuple<Tensor, Tensor> sample_autograd(const Tensor &x, int64_t k,
 using FuncIdxType = Tensor(const Tensor &, int64_t,
                            torch::optional<int64_t>,
                            torch::optional<int64_t>,
-                           torch::optional<Tensor>);
+                           torch::optional<Tensor>,
+                           torch::optional<int64_t>);
 
 Tensor sample_idx_autograd(const Tensor &x, int64_t k,
                            torch::optional<int64_t> h,
                            torch::optional<int64_t> start_idx,
-                           torch::optional<Tensor> mask) {
+                           torch::optional<Tensor> mask,
+                           torch::optional<int64_t> low_d) {
     // Indices are non-differentiable; we simply route to the underlying kernel below AD.
     torch::AutoDispatchBelowADInplaceOrView guard;
     static auto op = torch::Dispatcher::singleton()
                          .findSchemaOrThrow("torch_fpsample::sample_idx", "")
                          .typed<FuncIdxType>();
-    return op.call(x, k, h, start_idx, mask);
+    return op.call(x, k, h, start_idx, mask, low_d);
 }
 TORCH_LIBRARY_IMPL(torch_fpsample, Autograd, m) {
     m.impl("sample", &sample_autograd);

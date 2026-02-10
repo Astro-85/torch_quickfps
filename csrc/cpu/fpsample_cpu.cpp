@@ -29,12 +29,14 @@ std::tuple<Tensor, Tensor> sample_cpu(
     int64_t k,
     torch::optional<int64_t> h,
     torch::optional<int64_t> start_idx,
-    torch::optional<Tensor> mask_opt) {
+    torch::optional<Tensor> mask_opt,
+    torch::optional<int64_t> low_d) {
 
     TORCH_CHECK(x.device().is_cpu(), "x must be a CPU tensor, but found on ", x.device());
     TORCH_CHECK(x.dim() >= 2, "x must have at least 2 dims, but got size: ", x.sizes());
     TORCH_CHECK(k >= 1, "k must be greater than or equal to 1, but got ", k);
 
+    (void)low_d; // CPU path uses the full feature space KD-tree.
     auto [old_size, x_reshaped_raw] = bnorm_reshape(x);
     auto x_reshaped = x_reshaped_raw.to(torch::kFloat32).contiguous(); // [B,N,D]
 
@@ -176,12 +178,14 @@ Tensor sample_idx_cpu(
     int64_t k,
     torch::optional<int64_t> h,
     torch::optional<int64_t> start_idx,
-    torch::optional<Tensor> mask_opt) {
+    torch::optional<Tensor> mask_opt,
+    torch::optional<int64_t> low_d) {
 
     TORCH_CHECK(x.device().is_cpu(), "x must be a CPU tensor, but found on ", x.device());
     TORCH_CHECK(x.dim() >= 2, "x must have at least 2 dims, but got size: ", x.sizes());
     TORCH_CHECK(k >= 1, "k must be greater than or equal to 1, but got ", k);
 
+    (void)low_d; // CPU path uses the full feature space KD-tree.
     auto [old_size, x_reshaped_raw] = bnorm_reshape(x);
     auto x_reshaped = x_reshaped_raw.to(torch::kFloat32).contiguous(); // [B,N,D]
 

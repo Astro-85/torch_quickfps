@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: torch_fpsample
-Version: 0.2.7
+Version: 0.2.8.2
 Summary: PyTorch bucket-based farthest point sampling (CPU + CUDA).
 Author: Leonard Lin
 Author-email: leonard.keilin@gmail.com

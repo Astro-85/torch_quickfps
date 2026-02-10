@@ -10,8 +10,14 @@
 #define STR(x) STR_(x)
 
 TORCH_LIBRARY(torch_fpsample, m) {
-    m.def("sample(Tensor self, int k, int? h=None, int? start_idx=None, Tensor? mask=None) -> (Tensor, Tensor)");
-    m.def("sample_idx(Tensor self, int k, int? h=None, int? start_idx=None, Tensor? mask=None) -> Tensor");
+    // low_d controls the KD-tree bucketing space on CUDA.
+    // If low_d is None, the CUDA path attempts to build the KD-tree in the
+    // original feature space (C=D). For high-dimensional embeddings, users
+    // should set low_d to a small value (e.g., 3 or 8) so bucketing/pruning
+    // runs in a cheap projected space while distances are still computed in
+    // full D.
+    m.def("sample(Tensor self, int k, int? h=None, int? start_idx=None, Tensor? mask=None, int? low_d=None) -> (Tensor, Tensor)");
+    m.def("sample_idx(Tensor self, int k, int? h=None, int? start_idx=None, Tensor? mask=None, int? low_d=None) -> Tensor");
 }
 
 PYBIND11_MODULE(_core, m) {

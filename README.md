@@ -30,6 +30,9 @@ sampled_points, indices = torch_fpsample.sample(x, 1024, h=5)
 # random sample with start point index (int)
 sampled_points, indices = torch_fpsample.sample(x, 1024, start_idx=0)
 
+# For high-dimensional embeddings on CUDA, set low_d (e.g. 3 or 8) for faster bucketing
+sampled_points, indices = torch_fpsample.sample(x, 1024, h=6, low_d=8)
+
 # indices-only (avoids gather; fastest path)
 indices = torch_fpsample.sample(x, 1024, return_points=False)
 # or equivalently:
@@ -48,9 +51,10 @@ Size([64, 1024, 3]), Size([64, 1024])
 
 This package builds a CUDA extension when a CUDA toolchain is available (i.e., `nvcc` / `CUDA_HOME`).
 
-- Force CUDA build: `WITH_CUDA=1 pip install .` or `WITH_CUDA=1 pip install . --no-build-isolation --no-cache-dir -v`
+- Force CUDA build: `WITH_CUDA=1 pip install .`
 - Force CPU-only build: `WITH_CUDA=0 pip install .`
 
+On GPU, the sampler uses **bucket-based pruning** with an **adaptive KD-tree bucketing** (height `h`) in a low-dimensional bucketing space (optionally via a cheap Rademacher projection `low_d`). Buckets are represented as a CSR (offsets+indices) and distance updates run per-active-leaf with early-exit accumulation to avoid unnecessary work.
 
 ## Reference
 Bucket-based farthest point sampling (QuickFPS) is proposed in the following paper. The implementation is based on the author's Repo ([CPU](https://github.com/hanm2019/bucket-based_farthest-point-sampling_CPU) & [GPU](https://github.com/hanm2019/bucket-based_farthest-point-sampling_GPU)).

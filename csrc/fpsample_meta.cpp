@@ -6,13 +6,15 @@ using torch::Tensor;
 std::tuple<Tensor, Tensor> sample_meta(const Tensor &x, int64_t k,
                                        torch::optional<int64_t> h,
                                        torch::optional<int64_t> start_idx,
-                                       torch::optional<Tensor> mask) {
+                                       torch::optional<Tensor> mask,
+                                       torch::optional<int64_t> low_d) {
     TORCH_CHECK(x.dim() >= 2,
                 "x must have at least 2 dims, but got size: ", x.sizes());
     TORCH_CHECK(k >= 1, "k must be greater than or equal to 1, but got ", k);
     (void)h;
     (void)start_idx;
     (void)mask;
+    (void)low_d;
 
     auto tmp_s1 = x.sizes().vec();
     tmp_s1[tmp_s1.size() - 2] = k;
@@ -29,13 +31,15 @@ std::tuple<Tensor, Tensor> sample_meta(const Tensor &x, int64_t k,
 Tensor sample_idx_meta(const Tensor &x, int64_t k,
                        torch::optional<int64_t> h,
                        torch::optional<int64_t> start_idx,
-                       torch::optional<Tensor> mask) {
+                       torch::optional<Tensor> mask,
+                       torch::optional<int64_t> low_d) {
     TORCH_CHECK(x.dim() >= 2,
                 "x must have at least 2 dims, but got size: ", x.sizes());
     TORCH_CHECK(k >= 1, "k must be greater than or equal to 1, but got ", k);
     (void)h;
     (void)start_idx;
     (void)mask;
+    (void)low_d;
 
     auto tmp_s2 = x.sizes().vec();
     tmp_s2.pop_back();

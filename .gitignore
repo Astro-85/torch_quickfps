@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# C/C++ build outputs
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.pyd
+
+# CMake / Ninja / Make
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.ninja
+.ninja_*
+
+# PyTorch extensions
+**/build/
+**/temp.*
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+test/
+
+# MyPy / type checking
+.mypy_cache/
+.pytype/
+.pyre/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs / outputs
+*.log
+output.txt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

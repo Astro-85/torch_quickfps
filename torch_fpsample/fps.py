@@ -24,6 +24,7 @@ def sample(
     h: Optional[int] = None,
     start_idx: Optional[int] = None,
     mask: Optional[torch.Tensor] = None,
+    low_d: Optional[int] = None,
     return_points: bool = True,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """Bucket-based farthest point sampling.
@@ -35,6 +36,10 @@ def sample(
         start_idx: Optional starting index to seed FPS.
         mask: Optional boolean/uint8 mask of shape [..., N] where True means
             the point is eligible to be sampled.
+        low_d: Optional bucketing dimension for CUDA KD-tree bucketing. If None,
+            bucketing uses the full feature dimension C. If set (e.g., 3 or 8),
+            bucketing runs in a cheap Rademacher-projected space of size low_d
+            while FPS distances are still computed in full C.
         return_points: If True (default), return ``(points, indices)``.
             If False, return indices only (equivalent to :func:`sample_idx`).
 
@@ -44,8 +49,8 @@ def sample(
     """
 
     if return_points:
-        return torch.ops.torch_fpsample.sample(x, k, h, start_idx, mask)
-    return torch.ops.torch_fpsample.sample_idx(x, k, h, start_idx, mask)
+        return torch.ops.torch_fpsample.sample(x, k, h, start_idx, mask, low_d)
+    return torch.ops.torch_fpsample.sample_idx(x, k, h, start_idx, mask, low_d)
 
 
 def sample_idx(
@@ -54,6 +59,7 @@ def sample_idx(
     h: Optional[int] = None,
     start_idx: Optional[int] = None,
     mask: Optional[torch.Tensor] = None,
+    low_d: Optional[int] = None,
 ) -> torch.Tensor:
     """Bucket-based farthest point sampling (indices only).
 
@@ -63,4 +69,4 @@ def sample_idx(
     Returns:
         sampled_indices with shape [..., k]
     """
-    return torch.ops.torch_fpsample.sample_idx(x, k, h, start_idx, mask)
+    return torch.ops.torch_fpsample.sample_idx(x, k, h, start_idx, mask, low_d)
