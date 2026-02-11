@@ -18,6 +18,8 @@ TORCH_LIBRARY(torch_fpsample, m) {
     // full D.
     m.def("sample(Tensor self, int k, int? h=None, int? start_idx=None, Tensor? mask=None, int? low_d=None) -> (Tensor, Tensor)");
     m.def("sample_idx(Tensor self, int k, int? h=None, int? start_idx=None, Tensor? mask=None, int? low_d=None) -> Tensor");
+    m.def("sample_baseline(Tensor self, int k, int? h=None, int? start_idx=None, Tensor? mask=None, int? low_d=None) -> (Tensor, Tensor)");
+    m.def("sample_idx_baseline(Tensor self, int k, int? h=None, int? start_idx=None, Tensor? mask=None, int? low_d=None) -> Tensor");
 }
 
 PYBIND11_MODULE(_core, m) {

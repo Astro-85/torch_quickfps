@@ -50,4 +50,6 @@ Tensor sample_idx_meta(const Tensor &x, int64_t k,
 TORCH_LIBRARY_IMPL(torch_fpsample, Meta, m) {
     m.impl("sample", &sample_meta);
     m.impl("sample_idx", &sample_idx_meta);
+    m.impl("sample_baseline", &sample_meta);
+    m.impl("sample_idx_baseline", &sample_idx_meta);
 }

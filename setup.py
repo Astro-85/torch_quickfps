@@ -44,6 +44,7 @@ if WITH_CUDA:
         # link step sees the object twice, causing duplicate symbols.
         "csrc/cuda/fpsample_cuda_bindings.cpp",
         "csrc/cuda/fpsample_cuda_kernels.cu",
+        "csrc/cuda/fpsample_cuda_kernels_baseline.cu",
     ]
 
 extra_compile_args = {"cxx": ["-O3"]}

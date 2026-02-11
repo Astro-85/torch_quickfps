@@ -1,4 +1,4 @@
-tests/
+*EXCLUDE*
 output.txt
 *.zip
 

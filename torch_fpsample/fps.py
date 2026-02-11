@@ -7,6 +7,8 @@ We expose two user-facing functions:
 
 * :func:`sample` – returns (points, indices) to match common FPS APIs.
 * :func:`sample_idx` – returns indices only (no gather), for maximum speed.
+* :func:`sample_baseline` – baseline vanilla FPS (CUDA only).
+* :func:`sample_idx_baseline` – indices-only baseline vanilla FPS (CUDA only).
 
 Both accept an optional ``mask`` where ``True`` indicates eligible points.
 """
@@ -70,3 +72,40 @@ def sample_idx(
         sampled_indices with shape [..., k]
     """
     return torch.ops.torch_fpsample.sample_idx(x, k, h, start_idx, mask, low_d)
+
+
+def sample_baseline(
+    x: torch.Tensor,
+    k: int,
+    h: Optional[int] = None,
+    start_idx: Optional[int] = None,
+    mask: Optional[torch.Tensor] = None,
+    low_d: Optional[int] = None,
+    return_points: bool = True,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    """Baseline vanilla FPS (CUDA only).
+
+    Matches the signature of :func:`sample` for easy benchmarking.
+    """
+
+    if return_points:
+        return torch.ops.torch_fpsample.sample_baseline(
+            x, k, h, start_idx, mask, low_d
+        )
+    return torch.ops.torch_fpsample.sample_idx_baseline(
+        x, k, h, start_idx, mask, low_d
+    )
+
+
+def sample_idx_baseline(
+    x: torch.Tensor,
+    k: int,
+    h: Optional[int] = None,
+    start_idx: Optional[int] = None,
+    mask: Optional[torch.Tensor] = None,
+    low_d: Optional[int] = None,
+) -> torch.Tensor:
+    """Baseline vanilla FPS (indices only, CUDA only)."""
+    return torch.ops.torch_fpsample.sample_idx_baseline(
+        x, k, h, start_idx, mask, low_d
+    )
