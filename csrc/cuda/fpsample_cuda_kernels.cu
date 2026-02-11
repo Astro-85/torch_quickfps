@@ -25,6 +25,8 @@
 
 namespace {
 
+constexpr int kMaxBucketingP = 64;
+
 #define CUDA_CHECK(err)                                                      \
     do {                                                                     \
         cudaError_t err__ = (err);                                           \
@@ -56,8 +58,6 @@ __device__ __forceinline__ float atomicMaxFloat(float* addr, float value) {
         if (old == assumed) return __int_as_float(old);
     }
 }
-
-__device__ __forceinline__ float sqr(float x) { return x * x; }
 
 // Pack (dist, idx) into a single 64-bit key so the pair stays consistent.
 //
@@ -93,6 +93,40 @@ __device__ __forceinline__ unsigned long long atomicMaxU64(unsigned long long* a
     return old;
 }
 
+__device__ __forceinline__ unsigned long long block_reduce_best_key(
+    const int64_t* __restrict__ bucket_best_key,
+    const int32_t* __restrict__ bucket_count,
+    uint8_t* __restrict__ selected_mask,
+    int B, int N, int key_range,
+    int b,
+    unsigned long long* __restrict__ sh_best_k
+) {
+    unsigned long long local_best_k = 0ull;
+
+    for (int j = threadIdx.x; j < key_range; j += blockDim.x) {
+        int32_t cnt = bucket_count[b * key_range + j];
+        if (cnt <= 0) continue;
+        unsigned long long k = (unsigned long long)bucket_best_key[b * (int64_t)key_range + j];
+        if (k == 0ull) continue;
+        int32_t idx = unpack_best_idx(k);
+        if (selected_mask && selected_mask[(int64_t)b * N + idx]) continue;
+        if (k > local_best_k) local_best_k = k;
+    }
+
+    int t = threadIdx.x;
+    if (t < 256) sh_best_k[t] = local_best_k;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (t < stride) {
+            if (sh_best_k[t + stride] > sh_best_k[t]) sh_best_k[t] = sh_best_k[t + stride];
+        }
+        __syncthreads();
+    }
+
+    return sh_best_k[0];
+}
+
 template <typename scalar_t>
 __device__ __forceinline__ float to_float(scalar_t v) {
     return static_cast<float>(v);
@@ -105,12 +139,12 @@ __device__ __forceinline__ float to_float(scalar_t v) {
 // Cheap, geometry-agnostic projection for high-D embeddings.
 //
 // We use p Rademacher sign vectors and scale them so the projection is
-// non-expansive (a contraction) in L2:
+// non-expansive (1-Lipschitz) in L2:
 //   y = x @ R, with ||R||_2 <= ||R||_F = 1.
 //
 // Concretely, each projection vector has entries in {+1,-1} and is scaled by
 // 1/sqrt(D*p). This guarantees ||y(x)-y(z)|| <= ||x-z||, which keeps the
-// pruning bound in active_mask_kernel safe.
+// pruning bound in active mask pruning safe.
 __device__ __forceinline__ uint32_t mixbits(uint32_t x) {
     x ^= x >> 16;
     x *= 0x7feb352du;
@@ -141,7 +175,7 @@ __global__ void project_rademacher_kernel(
     const scalar_t* xb = x + ((int64_t)b * N * D);
     const scalar_t* xi = xb + (int64_t)i * D;
     // NOTE: We keep p small (user-controlled low_d) so this remains cheap.
-    constexpr int MAX_P = 32;
+    constexpr int MAX_P = kMaxBucketingP;
     // Scale so ||R||_F = 1 => ||R||_2 <= 1, hence projection is non-expansive.
     float inv_norm = rsqrtf((float)D * (float)p);
 
@@ -330,114 +364,6 @@ __global__ void kdtree_finalize_bucket_id_kernel(
     bucket_id[(int64_t)b * N + i] = leaf;
 }
 
-// Assign bucket ids by traversing a complete binary KD-tree.
-//
-// The tree is stored as arrays over internal nodes (size = key_range-1).
-// For a node index n: left=2n+1, right=2n+2.
-// After `height` levels, the node index points into the leaf region.
-// The corresponding leaf id is node - (key_range-1).
-__global__ void assign_bucket_id_kdtree_kernel(
-    const float* __restrict__ coords,      // [B,N,p] float32
-    const int32_t* __restrict__ split_dim, // [B,internal_nodes]
-    const float* __restrict__ split_val,   // [B,internal_nodes]
-    const uint8_t* __restrict__ invalid_mask, // [B,N] uint8 (1=invalid)
-    int B, int N, int p,
-    int height,
-    int key_range,
-    int32_t* __restrict__ bucket_id // [B,N]
-) {
-    int b = blockIdx.y;
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (b >= B || i >= N) return;
-
-    if (invalid_mask && invalid_mask[(int64_t)b * N + i]) {
-        bucket_id[(int64_t)b * N + i] = -1;
-        return;
-    }
-
-    const int internal_nodes = key_range - 1;
-    int node = 0;
-    const float* ci = coords + ((int64_t)b * N + i) * p;
-
-    for (int d = 0; d < height; ++d) {
-        int32_t dim = split_dim[b * internal_nodes + node];
-        float thr = split_val[b * internal_nodes + node];
-        // Guard against degenerate dim indices.
-        dim = (dim < 0) ? 0 : (dim >= p ? (p - 1) : dim);
-        float v = ci[dim];
-        node = (v <= thr) ? (2 * node + 1) : (2 * node + 2);
-        if (node >= (2 * internal_nodes + 1)) break;
-    }
-
-    int leaf = node - internal_nodes;
-    if (leaf < 0) leaf = 0;
-    if (leaf >= key_range) leaf = key_range - 1;
-    bucket_id[(int64_t)b * N + i] = (int32_t)leaf;
-}
-
-__global__ void compute_bucket_id_kernel(
-    const float* __restrict__ coords, // [B,N,p] float32
-    const float* __restrict__ minv, // [B,p]
-    const float* __restrict__ maxv, // [B,p]
-    int B, int N, int p, int q,
-    int32_t* __restrict__ bucket_id // [B,N]
-) {
-    int b = blockIdx.y;
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (b >= B || i >= N) return;
-
-    const float* ci = coords + ((int64_t)b * N + i) * p;
-    int32_t key = 0;
-
-    if (p == 1) {
-        float mn = minv[b * p + 0];
-        float mx = maxv[b * p + 0];
-        float range = mx - mn;
-        range = (range > 1e-12f) ? range : 1.0f;
-        float v = (ci[0] - mn) / range;
-        v = fminf(fmaxf(v, 0.0f), 0.999999f);
-        int32_t ix = (int32_t)floorf(v * q);
-        ix = min(max(ix, 0), q - 1);
-        key = ix;
-    } else if (p == 2) {
-        float mn0 = minv[b * p + 0], mx0 = maxv[b * p + 0];
-        float mn1 = minv[b * p + 1], mx1 = maxv[b * p + 1];
-        float r0 = mx0 - mn0; r0 = (r0 > 1e-12f) ? r0 : 1.0f;
-        float r1 = mx1 - mn1; r1 = (r1 > 1e-12f) ? r1 : 1.0f;
-        float v0 = (ci[0] - mn0) / r0;
-        float v1 = (ci[1] - mn1) / r1;
-        v0 = fminf(fmaxf(v0, 0.0f), 0.999999f);
-        v1 = fminf(fmaxf(v1, 0.0f), 0.999999f);
-        int32_t ix = (int32_t)floorf(v0 * q);
-        int32_t iy = (int32_t)floorf(v1 * q);
-        ix = min(max(ix, 0), q - 1);
-        iy = min(max(iy, 0), q - 1);
-        key = ix + q * iy;
-    } else { // p == 3
-        float mn0 = minv[b * p + 0], mx0 = maxv[b * p + 0];
-        float mn1 = minv[b * p + 1], mx1 = maxv[b * p + 1];
-        float mn2 = minv[b * p + 2], mx2 = maxv[b * p + 2];
-        float r0 = mx0 - mn0; r0 = (r0 > 1e-12f) ? r0 : 1.0f;
-        float r1 = mx1 - mn1; r1 = (r1 > 1e-12f) ? r1 : 1.0f;
-        float r2 = mx2 - mn2; r2 = (r2 > 1e-12f) ? r2 : 1.0f;
-        float v0 = (ci[0] - mn0) / r0;
-        float v1 = (ci[1] - mn1) / r1;
-        float v2 = (ci[2] - mn2) / r2;
-        v0 = fminf(fmaxf(v0, 0.0f), 0.999999f);
-        v1 = fminf(fmaxf(v1, 0.0f), 0.999999f);
-        v2 = fminf(fmaxf(v2, 0.0f), 0.999999f);
-        int32_t ix = (int32_t)floorf(v0 * q);
-        int32_t iy = (int32_t)floorf(v1 * q);
-        int32_t iz = (int32_t)floorf(v2 * q);
-        ix = min(max(ix, 0), q - 1);
-        iy = min(max(iy, 0), q - 1);
-        iz = min(max(iz, 0), q - 1);
-        key = ix + q * (iy + q * iz);
-    }
-
-    bucket_id[b * (int64_t)N + i] = key;
-}
-
 __global__ void bbox_counts_kernel(
     const float* __restrict__ coords1, // [B,N,p] float32
     const float* __restrict__ coords2, // [B,N,p] float32 (optional; may be nullptr)
@@ -603,32 +529,12 @@ __global__ void reduce_bucket_best_kernel(
     int b = blockIdx.x;
     if (b >= B) return;
 
-    unsigned long long local_best_k = 0ull;
-
-    for (int j = threadIdx.x; j < key_range; j += blockDim.x) {
-        int32_t cnt = bucket_count[b * key_range + j];
-        if (cnt <= 0) continue;
-        unsigned long long k = (unsigned long long)bucket_best_key[b * (int64_t)key_range + j];
-        if (k == 0ull) continue;
-        int32_t idx = unpack_best_idx(k);
-        if (selected_mask && selected_mask[(int64_t)b * N + idx]) continue;
-        if (k > local_best_k) local_best_k = k;
-    }
-
     __shared__ unsigned long long sh_best_k[256];
     int t = threadIdx.x;
-    if (t < 256) sh_best_k[t] = local_best_k;
-    __syncthreads();
-
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (t < stride) {
-            if (sh_best_k[t + stride] > sh_best_k[t]) sh_best_k[t] = sh_best_k[t + stride];
-        }
-        __syncthreads();
-    }
+    unsigned long long best_k = block_reduce_best_key(
+        bucket_best_key, bucket_count, selected_mask, B, N, key_range, b, sh_best_k);
 
     if (t == 0) {
-        unsigned long long best_k = sh_best_k[0];
         int64_t chosen = 0;
 
         if (best_k == 0ull && selected_mask) {
@@ -676,33 +582,13 @@ __global__ void reduce_and_active_mask_kernel(
     int b = blockIdx.x;
     if (b >= B) return;
 
-    unsigned long long local_best_k = 0ull;
-
-    for (int j = threadIdx.x; j < key_range; j += blockDim.x) {
-        int32_t cnt = bucket_count[b * key_range + j];
-        if (cnt <= 0) continue;
-        unsigned long long k = (unsigned long long)bucket_best_key[b * (int64_t)key_range + j];
-        if (k == 0ull) continue;
-        int32_t idx = unpack_best_idx(k);
-        if (selected_mask && selected_mask[(int64_t)b * N + idx]) continue;
-        if (k > local_best_k) local_best_k = k;
-    }
-
     __shared__ unsigned long long sh_best_k[256];
     int t = threadIdx.x;
-    if (t < 256) sh_best_k[t] = local_best_k;
-    __syncthreads();
-
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (t < stride) {
-            if (sh_best_k[t + stride] > sh_best_k[t]) sh_best_k[t] = sh_best_k[t + stride];
-        }
-        __syncthreads();
-    }
+    unsigned long long best_k = block_reduce_best_key(
+        bucket_best_key, bucket_count, selected_mask, B, N, key_range, b, sh_best_k);
 
     __shared__ int64_t sh_chosen;
     if (t == 0) {
-        unsigned long long best_k = sh_best_k[0];
         int64_t chosen = 0;
 
         if (best_k == 0ull && selected_mask) {
@@ -792,98 +678,6 @@ __global__ void reduce_and_active_mask_kernel(
         }
     }
 }
-
-__global__ void active_mask_kernel(
-    const float* __restrict__ coords1, // [B,N,p] float32
-    const float* __restrict__ coords2, // [B,N,p] float32 (optional; may be nullptr)
-    const int32_t* __restrict__ bucket_id, // [B,N]
-    const int64_t* __restrict__ ref_idx, // [B]
-    const float* __restrict__ bbox1_min, // [B,key_range,p]
-    const float* __restrict__ bbox1_max, // [B,key_range,p]
-    const float* __restrict__ bbox2_min, // [B,key_range,p] (optional; may be nullptr)
-    const float* __restrict__ bbox2_max, // [B,key_range,p] (optional; may be nullptr)
-    int64_t* __restrict__ bucket_best_key, // [B,key_range]
-    const int32_t* __restrict__ bucket_count, // [B,key_range]
-    int B, int N, int p, int key_range,
-    uint8_t* __restrict__ active_mask // [B,key_range]
-) {
-    int b = blockIdx.y;
-    int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (b >= B || j >= key_range) return;
-
-    int32_t cnt = bucket_count[b * key_range + j];
-
-    int64_t ridx = ref_idx[b];
-    ridx = (ridx < 0) ? 0 : ((ridx >= N) ? (N - 1) : ridx);
-    int32_t ref_bucket = bucket_id[(int64_t)b * N + ridx];
-
-    if (cnt <= 0) {
-        active_mask[b * (int64_t)key_range + j] = 0;
-        return;
-    }
-
-    unsigned long long key = (unsigned long long)bucket_best_key[b * (int64_t)key_range + j];
-    float lastmax = unpack_best_dist(key);
-
-    // Fast reject: if lastmax==0, nothing in this bucket can improve.
-    if (!(lastmax > 0.0f)) {
-        uint8_t active = (ref_bucket == j) ? 1 : 0;
-        active_mask[b * (int64_t)key_range + j] = active;
-        if (active) bucket_best_key[b * (int64_t)key_range + j] = 0;
-        return;
-    }
-
-    const float* cref1 = coords1 + ((int64_t)b * N + ridx) * p;
-
-    const int64_t leaf_base = ((int64_t)b * key_range + j) * p;
-    const float* b1min = bbox1_min + leaf_base;
-    const float* b1max = bbox1_max + leaf_base;
-
-    // Compute squared distance from the reference point to the axis-aligned
-    // bounding box of the bucket in the bucketing space (projection 1).
-    float bound = 0.0f;
-    for (int d = 0; d < p; ++d) {
-        float v = cref1[d];
-        float dd = 0.0f;
-        float lo = b1min[d], hi = b1max[d];
-        if (v > hi) dd = v - hi;
-        else if (v < lo) dd = lo - v;
-        bound += dd * dd;
-    }
-
-    // Optional second projection: take max(lower_bound_1, lower_bound_2)
-    // for a tighter (still safe) bound on the full-D distance.
-    if (coords2 != nullptr && bbox2_min != nullptr && bbox2_max != nullptr) {
-        const float* cref2 = coords2 + ((int64_t)b * N + ridx) * p;
-        const float* b2min = bbox2_min + leaf_base;
-        const float* b2max = bbox2_max + leaf_base;
-
-        float bound2 = 0.0f;
-        for (int d = 0; d < p; ++d) {
-            float v = cref2[d];
-            float dd = 0.0f;
-            float lo = b2min[d], hi = b2max[d];
-            if (v > hi) dd = v - hi;
-            else if (v < lo) dd = lo - v;
-            bound2 += dd * dd;
-        }
-        bound = fmaxf(bound, bound2);
-    }
-
-    // Safe pruning.
-    uint8_t active = (bound < lastmax) ? 1 : 0;
-
-    // Always update the bucket that contains the reference index.
-    if (ref_bucket == j) active = 1;
-
-    active_mask[b * (int64_t)key_range + j] = active;
-
-    // Fuse reset: active buckets will be recomputed from scratch in the update kernel.
-    if (active) {
-        bucket_best_key[b * (int64_t)key_range + j] = 0;
-    }
-}
-
 
 // Warp reduction for uint64 max.
 __device__ __forceinline__ unsigned long long warp_reduce_max_u64(unsigned long long v) {
@@ -1169,7 +963,7 @@ __global__ void update_leaves_kernel(
         if (lane == 0) {
             const float* ci1 = coords1 + ((int64_t)b * N + i) * p;
             #pragma unroll
-            for (int dd = 0; dd < 64; ++dd) {
+            for (int dd = 0; dd < kMaxBucketingP; ++dd) {
                 if (dd >= p) break;
                 float dv = ci1[dd] - cref1[dd];
                 lb += dv * dv;
@@ -1178,7 +972,7 @@ __global__ void update_leaves_kernel(
                 float lb2 = 0.0f;
                 const float* ci2 = coords2 + ((int64_t)b * N + i) * p;
                 #pragma unroll
-                for (int dd = 0; dd < 64; ++dd) {
+                for (int dd = 0; dd < kMaxBucketingP; ++dd) {
                     if (dd >= p) break;
                     float dv = ci2[dd] - cref2[dd];
                     lb2 += dv * dv;
@@ -1230,259 +1024,6 @@ __global__ void update_leaves_kernel(
 
 
 
-// -------------------------
-// Active leaf compaction + persistent per-leaf update
-// -------------------------
-
-// Compact active leaves into a flat list of global bucket indices: g = b * key_range + leaf.
-// Single-block kernel: total elements (B*key_range) is small in typical settings.
-__global__ void compact_active_pairs_kernel(
-    const uint8_t* __restrict__ active_mask, // [B,key_range]
-    int B, int key_range,
-    int32_t* __restrict__ active_pairs, // [B*key_range]
-    int32_t* __restrict__ active_total  // [1]
-) {
-    if (blockIdx.x != 0) return;
-    if (threadIdx.x == 0) active_total[0] = 0;
-    __syncthreads();
-
-    int total = B * key_range;
-    for (int idx = threadIdx.x; idx < total; idx += blockDim.x) {
-        if (active_mask[idx]) {
-            int pos = atomicAdd(&active_total[0], 1);
-            active_pairs[pos] = idx;
-        }
-    }
-}
-
-template <typename scalar_t>
-__global__ void update_active_pairs_persistent_kernel(
-    const scalar_t* __restrict__ x, // [B,N,D]
-    const int32_t* __restrict__ bucket_offsets, // [B,key_range+1]
-    const int32_t* __restrict__ bucket_indices, // [B,N]
-    const uint8_t* __restrict__ selected_mask, // [B,N]
-    const int64_t* __restrict__ ref_idx, // [B]
-    int B, int N, int D, int key_range,
-    const int32_t* __restrict__ active_pairs, // [*]
-    const int32_t* __restrict__ active_total, // [1]
-    int32_t* __restrict__ work_counter, // [1] (initialized to 0)
-    float* __restrict__ min_dist, // [B,N]
-    int64_t* __restrict__ bucket_best_key // [B,key_range]
-) {
-    __shared__ int task;
-    while (true) {
-        if (threadIdx.x == 0) {
-            task = atomicAdd(work_counter, 1);
-        }
-        __syncthreads();
-        if (task >= active_total[0]) return;
-
-        int g = active_pairs[task];
-        int b = g / key_range;
-        int leaf = g - b * key_range;
-        if (b < 0 || b >= B || leaf < 0 || leaf >= key_range) {
-            __syncthreads();
-            continue;
-        }
-
-        int64_t ridx = ref_idx[b];
-        ridx = (ridx < 0) ? 0 : ((ridx >= N) ? (N - 1) : ridx);
-
-        const scalar_t* xb = x + ((int64_t)b * N * D);
-        const scalar_t* xref = xb + (int64_t)ridx * D;
-
-        int64_t base_o = (int64_t)b * (key_range + 1);
-        int32_t start = bucket_offsets[base_o + leaf];
-        int32_t end   = bucket_offsets[base_o + (leaf + 1)];
-        if (start < 0) start = 0;
-        if (end > N) end = N;
-
-        unsigned long long local_best = 0ull;
-
-        for (int32_t t = start + (int32_t)threadIdx.x; t < end; t += (int32_t)blockDim.x) {
-            int32_t i = bucket_indices[(int64_t)b * N + t];
-            if ((int)i < 0 || (int)i >= N) continue;
-            if (selected_mask && selected_mask[(int64_t)b * N + i]) continue;
-
-            float old = min_dist[(int64_t)b * N + i];
-            float dist = 0.0f;
-            const scalar_t* xi = xb + (int64_t)i * D;
-
-            constexpr int CHUNK = 32;
-            int d = 0;
-            for (; d + CHUNK <= D; d += CHUNK) {
-                #pragma unroll
-                for (int dd = 0; dd < CHUNK; ++dd) {
-                    float dv = to_float(xi[d + dd]) - to_float(xref[d + dd]);
-                    dist += dv * dv;
-                }
-                if (dist >= old) { dist = old; break; }
-            }
-            if (dist < old) {
-                for (; d < D; ++d) {
-                    float dv = to_float(xi[d]) - to_float(xref[d]);
-                    dist += dv * dv;
-                    if (dist >= old) { dist = old; break; }
-                }
-            }
-
-            float nd = dist;
-            if (nd < old) {
-                min_dist[(int64_t)b * N + i] = nd;
-            } else {
-                nd = old;
-            }
-
-            unsigned long long k = pack_best_key(nd, i);
-            if (k > local_best) local_best = k;
-        }
-
-        unsigned long long v = warp_reduce_max_u64(local_best);
-        __shared__ unsigned long long warp_best[32];
-        int lane = threadIdx.x & 31;
-        int wid  = threadIdx.x >> 5;
-        if (lane == 0) warp_best[wid] = v;
-        __syncthreads();
-
-        unsigned long long block_best = 0ull;
-        if (wid == 0) {
-            block_best = (threadIdx.x < (blockDim.x >> 5)) ? warp_best[lane] : 0ull;
-            block_best = warp_reduce_max_u64(block_best);
-        }
-
-        if (threadIdx.x == 0) {
-            bucket_best_key[(int64_t)b * key_range + leaf] = (int64_t)block_best;
-        }
-        __syncthreads();
-    }
-}
-
-
-
-// -------------------------
-
-
-// -------------------------
-// CPU-side KD-tree split builder (per batch)
-// -------------------------
-//
-// We build a complete binary KD-tree of fixed `height` in the bucketing space
-// (dimension p). This produces `internal_nodes = 2^height - 1` splits.
-//
-// Split rule (matches CPU KDLineTree behavior):
-//   * choose the dimension with the widest extent (max-min)
-//   * split at the mean along that dimension
-//   * partition indices by (v <= thr) vs (v > thr)
-//
-// Invalid points (invalid_mask[i]==1) are excluded from tree construction.
-//
-static void build_kdtree_splits_batch(
-    const float* coords, // [N,p] contiguous
-    int N, int p, int height,
-    const uint8_t* invalid_mask, // [N] or nullptr, 1=invalid
-    int32_t* split_dim, // [internal_nodes]
-    float* split_val    // [internal_nodes]
-) {
-    const int key_range = 1 << height;
-    const int internal_nodes = key_range - 1;
-
-    for (int i = 0; i < internal_nodes; ++i) {
-        split_dim[i] = 0;
-        split_val[i] = 0.0f;
-    }
-
-    std::vector<int32_t> perm;
-    perm.reserve((size_t)N);
-    if (invalid_mask) {
-        for (int i = 0; i < N; ++i) {
-            if (!invalid_mask[i]) perm.push_back((int32_t)i);
-        }
-    } else {
-        for (int i = 0; i < N; ++i) perm.push_back((int32_t)i);
-    }
-
-    const int MAX_P = 64; // enforced by caller
-    struct Builder {
-        const float* coords;
-        int p;
-        int height;
-        int internal_nodes;
-        std::vector<int32_t>& perm;
-        int32_t* split_dim;
-        float* split_val;
-
-        void build(int node, int depth, int l, int r) {
-            if (depth >= height) return;
-            if (node < 0 || node >= internal_nodes) return;
-
-            const int cnt = r - l;
-            if (cnt <= 0) {
-                build(2 * node + 1, depth + 1, l, l);
-                build(2 * node + 2, depth + 1, l, l);
-                return;
-            }
-
-            float mn[MAX_P];
-            float mx[MAX_P];
-            for (int d = 0; d < p; ++d) {
-                mn[d] = std::numeric_limits<float>::infinity();
-                mx[d] = -std::numeric_limits<float>::infinity();
-            }
-
-            // bbox
-            for (int t = l; t < r; ++t) {
-                int32_t idx = perm[(size_t)t];
-                const float* ci = coords + (int64_t)idx * p;
-                for (int d = 0; d < p; ++d) {
-                    float v = ci[d];
-                    mn[d] = (v < mn[d]) ? v : mn[d];
-                    mx[d] = (v > mx[d]) ? v : mx[d];
-                }
-            }
-
-            // widest dim
-            int best_dim = 0;
-            float best_range = mx[0] - mn[0];
-            for (int d = 1; d < p; ++d) {
-                float range = mx[d] - mn[d];
-                if (range > best_range) { best_range = range; best_dim = d; }
-            }
-
-            // mean split
-            double sum = 0.0;
-            for (int t = l; t < r; ++t) {
-                int32_t idx = perm[(size_t)t];
-                sum += (double)coords[(int64_t)idx * p + best_dim];
-            }
-            float thr = (float)(sum / (double)cnt);
-
-            split_dim[node] = (int32_t)best_dim;
-            split_val[node] = thr;
-
-            // partition
-            int i = l;
-            int j = r;
-            while (i < j) {
-                int32_t idx = perm[(size_t)i];
-                float v = coords[(int64_t)idx * p + best_dim];
-                if (v <= thr) {
-                    ++i;
-                } else {
-                    --j;
-                    std::swap(perm[(size_t)i], perm[(size_t)j]);
-                }
-            }
-            int mid = i;
-
-            build(2 * node + 1, depth + 1, l, mid);
-            build(2 * node + 2, depth + 1, mid, r);
-        }
-    };
-
-    Builder builder{coords, p, height, internal_nodes, perm, split_dim, split_val};
-    builder.build(0, 0, 0, (int)perm.size());
-}
-
 // Host-side entrypoints
 // -------------------------
 
@@ -1516,7 +1057,6 @@ static torch::Tensor sample_cuda_indices_impl(
     TORCH_CHECK(height <= 12,
                 "h (KD-tree height) must be <= 12 for CUDA (max 4096 leaves), got ", height);
     const int key_range = 1 << (int)height;
-    const int internal_nodes = key_range - 1;
 
     // KD-tree bucketing dimension.
     // If low_d is provided, we bucket in a rademacher-projected space of size p.
@@ -1525,9 +1065,9 @@ static torch::Tensor sample_cuda_indices_impl(
     int p = (low_d_v > 0) ? (int)std::min<int64_t>((int64_t)D, low_d_v) : D;
     TORCH_CHECK(p >= 1, "p must be >= 1, got ", p);
     // NOTE: bbox/count tensors scale with p, so we cap this for practical performance.
-    TORCH_CHECK(p <= 64,
-                "For CUDA KD-tree bucketing, bucketing dimension p must be <= 64. "
-                "Got p=", p, " (D=", D, "). Please set low_d<=64 (e.g., 3 or 8) for high-D embeddings.");
+    TORCH_CHECK(p <= kMaxBucketingP,
+                "For CUDA KD-tree bucketing, bucketing dimension p must be <= ", kMaxBucketingP, ". "
+                "Got p=", p, " (D=", D, "). Please set low_d<=", kMaxBucketingP, " (e.g., 3 or 8) for high-D embeddings.");
 
     auto opts_i32 = x_reshaped.options().dtype(torch::kInt32);
     auto opts_i64 = x_reshaped.options().dtype(torch::kInt64);
@@ -1579,7 +1119,6 @@ static torch::Tensor sample_cuda_indices_impl(
     const int threads = 256;
     dim3 block(threads);
     dim3 grid_points((N + threads - 1) / threads, B);
-    dim3 grid_bucket((key_range + threads - 1) / threads, B);
 
     cudaStream_t stream = c10::cuda::getCurrentCUDAStream(x.device().index()).stream();
 
@@ -1713,7 +1252,7 @@ static torch::Tensor sample_cuda_indices_impl(
         bucket_id.data_ptr<int32_t>());
     CUDA_CHECK(cudaGetLastError());
 
-        const float* coords2_ptr = coords2_f32.defined() ? coords2_f32.data_ptr<float>() : nullptr;
+    const float* coords2_ptr = coords2_f32.defined() ? coords2_f32.data_ptr<float>() : nullptr;
     float* bbox2_min_ptr = bbox2_min.defined() ? bbox2_min.data_ptr<float>() : nullptr;
     float* bbox2_max_ptr = bbox2_max.defined() ? bbox2_max.data_ptr<float>() : nullptr;
 
