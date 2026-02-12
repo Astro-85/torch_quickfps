@@ -2,7 +2,7 @@
 
 Efficient **farthest point sampling (FPS)** for PyTorch, adapted from [fpsample](https://github.com/leonardodalinky/fpsample).
 
-This project provides **bucket-based FPS on both CPU and GPU**. The GPU path is optimized for **high-dimensional sampling** (e.g., feature embeddings).
+This project provides bucket-based FPS on both CPU and GPU. The GPU path is optimized for high-dimensional sampling (e.g., feature embeddings).
 
 ---
 
@@ -24,7 +24,7 @@ pip install .
 import torch
 import torch_fpsample
 
-x = torch.rand(64, 2048, 3)
+x = torch.rand(64, 2048, 256)
 
 # Random sample
 sampled_points, indices = torch_fpsample.sample(x, 1024)
@@ -65,34 +65,26 @@ This package builds a CUDA extension when a CUDA toolchain is available (`nvcc` 
 
 ## Performance comparison
 
-Comparison includes CPU, a **vanilla GPU FPS baseline**, and our **bucketed GPU** implementation.
+Comparison includes CPU, a vanilla GPU FPS baseline, and our bucketed GPU implementation.
 
 * **N**: number of input points
 * **D**: point dimension
 * **K**: number of sampled points
-* **CPU vs GPU (bucketed)**: `CPU_ms / GPU_bucketed_ms` ( >1 means GPU bucketed is faster )
-* **GPU baseline vs bucketed**: `GPU_baseline_ms / GPU_bucketed_ms` ( >1 means bucketed is faster )
+* **CPU vs GPU (bucketed)**: `CPU_ms / GPU_bucketed_ms`
+* **GPU baseline vs bucketed**: `GPU_baseline_ms / GPU_bucketed_ms`
 
 |     N |    D |    K |  CPU (ms) | GPU baseline (ms) | GPU bucketed (ms) | CPU vs GPU (bucketed) | GPU baseline vs bucketed |
 | ----: | ---: | ---: | --------: | ----------------: | ----------------: | --------------------: | -----------------------: |
 |  1000 |    8 |  250 |     0.271 |             0.404 |             2.671 |                 0.10x |                    0.15x |
-|  1000 |   64 |  250 |     2.718 |             6.117 |             2.908 |                 0.93x |                    2.10x |
-|  1000 |  256 |  250 |    13.945 |            23.676 |             4.005 |                 3.48x |                    5.91x |
 |  1000 | 1024 |  250 |    69.697 |            94.144 |             4.867 |                14.32x |                   19.34x |
 |  1000 | 4096 |  250 |   248.521 |           378.458 |            10.614 |                23.41x |                   35.65x |
 |  2000 |    8 |  500 |     1.578 |             1.299 |             5.432 |                 0.29x |                    0.24x |
-|  2000 |   64 |  500 |     9.644 |            25.658 |             6.555 |                 1.47x |                    3.91x |
-|  2000 |  256 |  500 |    39.424 |           100.612 |             8.612 |                 4.58x |                   11.68x |
 |  2000 | 1024 |  500 |   213.804 |           399.292 |            11.018 |                19.41x |                   36.24x |
 |  2000 | 4096 |  500 |   869.318 |          1585.913 |            33.974 |                25.59x |                   46.68x |
 |  5000 |    8 | 1250 |     6.151 |             7.156 |            16.970 |                 0.36x |                    0.42x |
-|  5000 |   64 | 1250 |    47.877 |           157.348 |            24.252 |                 1.97x |                    6.49x |
-|  5000 |  256 | 1250 |   318.593 |           626.325 |            29.906 |                10.65x |                   20.94x |
 |  5000 | 1024 | 1250 |  1075.742 |          2483.299 |            47.459 |                22.67x |                   52.33x |
 |  5000 | 4096 | 1250 |  4547.318 |         10027.665 |           154.874 |                29.36x |                   64.75x |
 | 10000 |    8 | 2500 |    22.135 |            26.152 |            43.379 |                 0.51x |                    0.60x |
-| 10000 |   64 | 2500 |   187.709 |           626.442 |            65.269 |                 2.88x |                    9.60x |
-| 10000 |  256 | 2500 |  1172.482 |          2503.120 |            94.904 |                12.35x |                   26.38x |
 | 10000 | 1024 | 2500 |  4503.257 |          9959.041 |           186.622 |                24.13x |                   53.36x |
 | 10000 | 4096 | 2500 | 21699.598 |         40439.047 |           645.883 |                33.60x |                   62.61x |
 
@@ -100,10 +92,7 @@ Comparison includes CPU, a **vanilla GPU FPS baseline**, and our **bucketed GPU*
 
 ## Reference
 
-Bucket-based FPS (QuickFPS) is proposed in the following paper. This implementation is based on the authors’ repos:
-
-* CPU: [https://github.com/hanm2019/bucket-based_farthest-point-sampling_CPU](https://github.com/hanm2019/bucket-based_farthest-point-sampling_CPU)
-* GPU: [https://github.com/hanm2019/bucket-based_farthest-point-sampling_GPU](https://github.com/hanm2019/bucket-based_farthest-point-sampling_GPU)
+Bucket-based FPS (QuickFPS) is proposed in the following paper:
 
 ```bibtex
 @article{han2023quickfps,
