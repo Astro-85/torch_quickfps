@@ -42,7 +42,8 @@ _DEF.define(
 )
 
 
-_IMPL = torch.library.Library("torch_quickfps", "IMPL", "CompositeExplicitAutograd")
+#_IMPL = torch.library.Library("torch_quickfps", "IMPL", "CompositeExplicitAutograd")
+_IMPL = torch.library.Library("torch_quickfps", "IMPL", "CompositeImplicitAutograd")
 
 
 def _bnorm_reshape(t: torch.Tensor) -> Tuple[torch.Size, torch.Tensor]:
@@ -234,43 +235,18 @@ def _sample_baseline(
 _IMPL.impl("sample_baseline", _sample_baseline)
 
 
-# Optional: FakeTensor support for torch.compile.
-@torch.library.register_fake("torch_quickfps::sample_idx")
-def _fake_sample_idx(x, k, h=None, start_idx=None, mask=None, low_d=None):
-    # Output shape: x.shape[:-1] with last point dim replaced by k.
-    out_shape = list(x.shape[:-1])
-    out_shape[-1] = int(k)
-    return torch.empty(out_shape, device=x.device, dtype=torch.long)
+# FakeTensor / torch.compile support:
+# With CompositeImplicitAutograd on the public ops, we should NOT register fake
+# for torch_quickfps::sample*, since they decompose. Instead, register fake for
+# the internal compiled kernels.
 
+@torch.library.register_fake("torch_quickfps::_sample_idx_impl")
+def _fake__sample_idx_impl(x, k, h, start_idx, invalid_mask, low_d):
+    # x: (B, N, D) -> returns (B, k) int64 indices
+    B = x.size(0)
+    return torch.empty((B, int(k)), device=x.device, dtype=torch.long)
 
-@torch.library.register_fake("torch_quickfps::sample")
-def _fake_sample(x, k, h=None, start_idx=None, mask=None, low_d=None):
-    k = int(k)
-    pts_shape = list(x.shape)
-    pts_shape[-2] = k
-    idx_shape = list(x.shape[:-1])
-    idx_shape[-1] = k
-    return (
-        torch.empty(pts_shape, device=x.device, dtype=x.dtype),
-        torch.empty(idx_shape, device=x.device, dtype=torch.long),
-    )
-
-
-@torch.library.register_fake("torch_quickfps::sample_idx_baseline")
-def _fake_sample_idx_baseline(x, k, h=None, start_idx=None, mask=None, low_d=None):
-    out_shape = list(x.shape[:-1])
-    out_shape[-1] = int(k)
-    return torch.empty(out_shape, device=x.device, dtype=torch.long)
-
-
-@torch.library.register_fake("torch_quickfps::sample_baseline")
-def _fake_sample_baseline(x, k, h=None, start_idx=None, mask=None, low_d=None):
-    k = int(k)
-    pts_shape = list(x.shape)
-    pts_shape[-2] = k
-    idx_shape = list(x.shape[:-1])
-    idx_shape[-1] = k
-    return (
-        torch.empty(pts_shape, device=x.device, dtype=x.dtype),
-        torch.empty(idx_shape, device=x.device, dtype=torch.long),
-    )
+@torch.library.register_fake("torch_quickfps::_sample_idx_baseline_impl")
+def _fake__sample_idx_baseline_impl(x, k, start_idx, invalid_mask):
+    B = x.size(0)
+    return torch.empty((B, int(k)), device=x.device, dtype=torch.long)
